@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/obs-avip", "crates/obs-avip-plugin"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-2.0-or-later"
+publish = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"

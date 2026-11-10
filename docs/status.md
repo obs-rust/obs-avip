@@ -1,0 +1,70 @@
+# Status (0.1.0, 2026-11-10)
+
+## Tested
+
+| Where | What was checked |
+|---|---|
+| Linux x86_64, obs-rust, 2026-11-07 and 11-08 | Swapped for DistroAV in a production setup with the profile and scene collection unchanged: no missing source, the saved settings load, the main output sends, receivers on the network show the picture. A 4K UYVY camera source at 25 fps with sender timecode sync. |
+| macOS 27 arm64, obs-rust nightly 1.0.1-beta.20261107 | Source with NDI Test Patterns, tally, main output; connect in 73 to 119 ms. NDI runtime 6.0.1. |
+| macOS 27, loopback through obs-avip's own output (2026-11-10) | NV12, I420 and RGBA output; two obs-avip sources (latency Normal and Lowest) receive it; pixel values of a gray and a saturated color source compared (see the table below). Preview output start, stop and scene changes. |
+| Linux x86_64, obs-rust, 2026-11-10 (format tests) | NDI HX phone camera (1080p): UYVY with latency Normal and Lowest, 0 skipped frames in 1,505. A 4K HDMI encoder (10-bit) with 4:2:2, 4:2:0, both color space orders, and the camera's HDMI output at 2160p25, 1080p50 and 1080i50; each with Normal and Lowest, about 500 frames each, 0 skipped. All arrive as UYVY: the SDK converts 10-bit to 8-bit also with "fastest". A size change inside a running receiver (4K to 1080p and back) was followed. |
+| Linux x86_64, obs-rust, 2026-11-10 (load) | 20 min against DistroAV 6.2.2 in the same production setup: +0.017 cores (+2.7 %), the same package power and temperature, about 10 MB less memory. |
+| Unit tests (69, no NDI runtime) | Settings contract against DistroAV, conversion, field weaving, resume state machine and `Receiver` against the mock, the TCP probe, finder, sender (buffers, packing, frame rate), tally, show/hide rules, registration decision, runtime search order. |
+
+Not tested: Windows (it does not build there: the loader knows only Linux and macOS), OBS Studio (only obs-rust), a sender that delivers NV12 or I420 (none of the tested senders did), 16-bit senders, more than 2 audio channels from a real sender, HDR (HLG) senders.
+
+## Measured
+
+- **Resume after a network cut** (all traffic of the sender dropped, then allowed again), time from the network back to the first frame:
+
+  | Cut | obs-avip, current rule (probe) | obs-avip, first rule (every 2 s) | DistroAV 6.2.2 / plain NDI SDK receiver |
+  |---|---|---|---|
+  | 5 s | | 0.7 s | 2.2 s |
+  | 10 s | 1.5 s, 1 re-connect | 0.7 s | 17 to 20 s |
+  | 30 s | 1.5 s, 1 re-connect | | |
+  | 45 s | | 0.7 s | 65 s |
+
+  The delay of DistroAV comes from the NDI SDK's own reconnect: a plain SDK receiver without OBS took 1.7 s, 18.8 s and 77.6 s for the same cuts. The current rule (see "Changed after the format tests") waits for the next probe after the network is back (every 2 s), so it is up to about 2 s, but it makes one connection per cut instead of one every 2 s.
+- **CPU and latency:** the same as DistroAV with the same settings. Most of the CPU is in the NDI runtime's own threads. The output's frame copy costs about 1 % of a core more at 1080p.
+- **Latency setting:** "Normal" (the default) gave 97 to 205 ms, different after each connect; "Lowest" gave 70 to 75 ms.
+- **Audio:** with a test stimulus through the whole chain, the sent audio was the same as DistroAV's in every check: level steps, frequency response, distortion, clock and click timing.
+
+## Limitations
+
+- No PTZ control, no NDI filters, no NDI audio-only senders as their own type.
+- No alpha output; UYVA sources are shown as UYVY (alpha dropped), as DistroAV does.
+- 16-bit formats (P216, PA16) are skipped with a log line. None of the tested senders delivered them: the SDK converted 10-bit senders to UYVY.
+- Single fields of a planar format (an interlaced NV12 or I420 sender) are skipped with a log line; packed fields are woven.
+- `ndi_framesync` and `ndi_recv_hw_accel` are read but have no effect. A DistroAV source that had framesync on runs without it.
+- 7 audio channels are passed as 5.1 (the first 6); more than 8 as the first 8.
+- One preview output only (DistroAV has one too).
+- New settings of a running output (for example from obs-websocket `SetOutputSettings`) take effect at its next start. The output settings window re-creates the main and preview outputs at once.
+- Windows is not supported yet.
+
+## Fixed after the code review of 2026-11-10
+
+| Issue | Fix | Checked |
+|---|---|---|
+| NV12 and I420 frames from a sender were passed with only their first plane (OBS read the chroma from a null pointer). | `convert::planes` gives every plane's offset and line size, as the SDK lays them out. | Unit test. With a real sender the receive path did not come up: an uncompressed NV12 or I420 sender (obs-avip's own output) arrives as UYVY even with "fastest", and an NDI HX sender (a phone camera, 2026-11-10) also arrived as UYVY, so no tested sender delivered NV12 or I420. The sender side was checked: obs-avip's output in NV12 and in I420 delivered a saturated color (152, 96, 32) exactly. |
+| `full_range` was never set: OBS converted RGB frames (BGRA, BGRX, RGBA) as limited range, and "Full" YUV range had no effect. HLG had no HLG transfer. | `convert::full_range`: RGB is always full range, YUV follows the setting; BT.2100 HLG sets the HLG transfer. | macOS loopback (obs-avip output in RGBA, received by obs-avip): the "Normal" receiver gets BGRA with `full_range=true` and shows 150, 94, 31 for 152, 96, 32 sent, and 63, 63, 61 for a gray of 64 (NDI's 4:2:2 compression gives the 1 to 3 steps). The old limited-range conversion would have given about 158, 93, 19 and 56. HLG: no HDR sender, not checked. |
+| The old receive thread was joined on OBS's video thread (settings change, hide then show). | No join outside `destroy`: stopping moves a generation on, and only the current thread may hand frames to OBS, so the caller clears at once and the old thread ends by itself. | macOS: 6 hide/show cycles (scene switches) and 2 latency changes: each new receiver connected in 53 to 62 ms, 0 skipped frames in 2,765. |
+| The discovery and the apply threads could outlive the module. | They are registered and joined at unload; discovery stops after its current wait. | Unit test (cancelled discovery); clean exit on macOS. |
+| The output settings were applied off the UI thread, racing with exit. | The wait stays on a thread, the apply runs as a UI task; nothing is applied after the frontend's exit. | Code only (the settings window needs a click). |
+| Changing the settings of a running output raced with libobs ending the capture. | Settings are behind a lock and take effect at the next start; the preview view is freed on the output's "deactivate", after the capture has ended. | macOS: `SetOutputSettings` on the running main output over obs-websocket, then stop and start: the new name took effect, no crash. Preview output: 3 stop and start cycles and a preview scene change, a receiver connected in 150 ms and got frames; clean exit. |
+
+## Changed after the format tests of 2026-11-10
+
+| Issue | Change | Checked |
+|---|---|---|
+| With latency "Lowest", an interlaced sender (1080i50) arrived as single fields (1920x540, `frame_format_type` field 0 / field 1), also with `allow_video_fields = false`, and was shown squashed to half height. Same with NDI SDK 6.0.1 (macOS) and 6.3.2 (Linux). | Field 0 and the field 1 after it are woven into one full frame, as the SDK does with "Normal"; OBS's own deinterlace setting then applies. | Unit tests (`convert::Weaver`). Linux, 4K HDMI encoder with a 1080i50 camera, latency Lowest: `1920x540 UYVY ... single fields: woven into full frames`, the picture full height, 0 skipped frames in 504. |
+| The resume rule re-connected every 2 s while no frame came. One 4K encoder (see the known issue below) stops sending video to a process after about 15 NDI connections; during a 25 s encoder restart these re-connects used them up, and the source stayed frozen until OBS was restarted. | While no frame comes, obs-avip looks up the sender's address in a finder and probes its NDI port with a plain TCP connect every 2 s (a plain connect is not an NDI connection and did not count). It re-connects once when the sender answers again after not answering (a network cut). While the sender answers, it does not re-connect (an encoder that restarts, lost its input or changes format), but logs a warning after 10 s and re-connects once every 30 s. With no address, it re-connects with a back-off (2, 4, 8, 16, then every 30 s). | Unit tests (state machine, `Receiver` against the mock, TCP probe). Linux, 4K encoder, all its traffic dropped for 10 s and 30 s: "not reachable" during the cut, one re-connect 1.5 s after the network was back, picture back at once. Not checked live: a sender that stays reachable and sends no frame at all (warning and 30 s re-connect); the tested encoder sends a still frame without input. |
+| The video line was logged only at the first frame of a receiver. | It is logged again when the size, the FourCC or the field mode changes. | Linux: logged for 2160p -> 1080p -> 1080i fields -> 1080p. |
+| An encoder without input sends a still frame about every 1.53 s, just over the 1.5 s stall time: the source logged a stall and a resume every 1.5 s. | The stall time is 2.5 smoothed frame intervals when that is longer than 1.5 s; a stall that ends within 10 s without a re-connect, with the sender reachable, counts as a slow frame. | Unit tests. Linux, HDMI input unplugged at the encoder: one stall and resume, then quiet; no re-connect. |
+
+## Known issue outside this plugin: an encoder that stops serving a process
+
+Seen with one hardware encoder (BirdDog Flex BP, firmware 6.1.201) and the Linux NDI SDK 6.3.2: after about 15 NDI connections from one process (a receiver created and destroyed, or re-connected), a new connection gets no video. Other processes and other computers still receive it; only a new process (an OBS restart) recovers. DistroAV 6.2.2 shows the same. Not seen with the same SDK on macOS, with an NDI HX phone camera, or with another 4K encoder (BirdDog 4K HDMI, firmware 5.5.313). Transport (TCP, RUDP, UDP), resolution, receiver name and NDI audio made no difference. [tools/recv_cycle.py](../tools/recv_cycle.py) shows it without OBS: it creates, uses and destroys receivers in a loop and prints the frames each one got.
+
+## Observed, not caused by this plugin
+
+On a long audio test, the NDI audio time of the main output stepped once by 16 ms (+1024 samples, then a few frames short), with the audio samples unchanged. The same step showed with DistroAV, so it comes from OBS's output audio timestamps. It is being investigated in obs-rust.

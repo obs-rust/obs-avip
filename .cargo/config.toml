@@ -1,0 +1,8 @@
+# The OBS shell imports libobs and obs-frontend-api symbols that OBS provides
+# when it loads the plugin. The macOS linker refuses undefined symbols unless
+# told to resolve them at load time.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
