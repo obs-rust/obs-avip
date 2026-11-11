@@ -11,4 +11,5 @@ name = "obs_avip_plugin"
 crate-type = ["cdylib"]
 
 [dependencies]
+if-addrs = "0.15.0"
 obs-avip = { path = "../obs-avip" }
