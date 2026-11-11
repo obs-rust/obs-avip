@@ -45,3 +45,12 @@ DistroAV compatibility
 The source and output ids, settings keys, defaults and value rules follow
 DistroAV (https://github.com/DistroAV/DistroAV, GPL-2.0), so that scene
 collections and profiles saved by DistroAV load unchanged.
+
+Rust dependencies
+-----------------
+The plugin crate links these crates from crates.io. Each is under the licence
+named here (the licence texts are in each crate's source):
+- if-addrs 0.15 (lists the network adapters): MIT OR BSD-3-Clause
+- libc 0.2 (used by if-addrs on Linux and macOS): MIT OR Apache-2.0
+- windows-sys 0.61 and windows-link 0.2 (used by if-addrs on Windows):
+  MIT OR Apache-2.0

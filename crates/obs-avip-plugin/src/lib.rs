@@ -25,6 +25,7 @@ use obs_avip::tally::{self, Event, TallyConfig};
 use obs_avip::visibility;
 use std::cell::RefCell;
 
+mod network_ui;
 mod output;
 mod settings_ui;
 use std::sync::atomic::AtomicU8;
@@ -996,6 +997,8 @@ pub unsafe extern "C" fn obs_module_post_load() {
         log(200, &line);
         return;
     }
+    // The runtime reads its network settings once, when it initializes.
+    network_ui::prepare();
     let env = std::env::var("NDI_RUNTIME_DIR_V6").ok();
     let list = |dir: &str| -> Vec<String> {
         std::fs::read_dir(dir)
@@ -1049,6 +1052,7 @@ pub unsafe extern "C" fn obs_module_post_load() {
     obs_register_source_s(&info, std::mem::size_of::<SourceInfo>());
     output::register();
     settings_ui::register();
+    network_ui::register();
     log(
         300,
         &format!(
@@ -1065,6 +1069,7 @@ pub unsafe extern "C" fn obs_module_unload() {
     join_background();
     output::close_main();
     settings_ui::close();
+    network_ui::close();
     // Sources are destroyed (and their receivers with them) before modules unload.
     if let Some(lib) = NDI.get() {
         lib.shutdown();

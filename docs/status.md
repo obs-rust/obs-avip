@@ -9,9 +9,10 @@
 | macOS 27, loopback through obs-avip's own output (2026-11-10) | NV12, I420 and RGBA output; two obs-avip sources (latency Normal and Lowest) receive it; pixel values of a gray and a saturated color source compared (see the table below). Preview output start, stop and scene changes. |
 | Linux x86_64, obs-rust, 2026-11-10 (format tests) | NDI HX phone camera (1080p): UYVY with latency Normal and Lowest, 0 skipped frames in 1,505. A 4K HDMI encoder (10-bit) with 4:2:2, 4:2:0, both color space orders, and the camera's HDMI output at 2160p25, 1080p50 and 1080i50; each with Normal and Lowest, about 500 frames each, 0 skipped. All arrive as UYVY: the SDK converts 10-bit to 8-bit also with "fastest". A size change inside a running receiver (4K to 1080p and back) was followed. |
 | Linux x86_64, obs-rust, 2026-11-10 (load) | 20 min against DistroAV 6.2.2 in the same production setup: +0.017 cores (+2.7 %), the same package power and temperature, about 10 MB less memory. |
-| Unit tests (69, no NDI runtime) | Settings contract against DistroAV, conversion, field weaving, resume state machine and `Receiver` against the mock, the TCP probe, finder, sender (buffers, packing, frame rate), tally, show/hide rules, registration decision, runtime search order. |
+| macOS 27, obs-rust nightly 20261107, 2026-11-11 (network settings) | Default: "the system settings", every sender listed. obs-avip settings with recv group `zz-none`: the file holds only that key, no sender listed. `NDI_CONFIG_DIR` set at launch: it wins, the log says obs-avip's settings are not used. The window: groups editable only with "obs-avip" selected, the adapter list, the restart line. NDI runtime 6.0.1. |
+| Unit tests (82, no NDI runtime) | Settings contract against DistroAV, conversion, field weaving, resume state machine and `Receiver` against the mock, the TCP probe, finder, sender (buffers, packing, frame rate), tally, show/hide rules, registration decision, runtime search order, the network settings file, its source decision, the adapter list and the restart rule. |
 
-Not tested: Windows (it does not build there: the loader knows only Linux and macOS), OBS Studio (only obs-rust), a sender that delivers NV12 or I420 (none of the tested senders did), 16-bit senders, more than 2 audio channels from a real sender, HDR (HLG) senders.
+Not tested: the network settings on Linux (NDI 6.3.2), Windows (it does not build there: the loader knows only Linux and macOS), OBS Studio (only obs-rust), a sender that delivers NV12 or I420 (none of the tested senders did), 16-bit senders, more than 2 audio channels from a real sender, HDR (HLG) senders.
 
 ## Measured
 
@@ -39,6 +40,9 @@ Not tested: Windows (it does not build there: the loader knows only Linux and ma
 - 7 audio channels are passed as 5.1 (the first 6); more than 8 as the first 8.
 - One preview output only (DistroAV has one too).
 - New settings of a running output (for example from obs-websocket `SetOutputSettings`) take effect at its next start. The output settings window re-creates the main and preview outputs at once.
+- The network settings apply at the next OBS start: the NDI runtime reads them once per process (see [architecture.md](architecture.md#network-settings)).
+- Groups limit what discovery lists, not a connection to a sender that a source already knows: with a receive group that hides a sender, a saved source of that sender still connected.
+- The adapter list shows IPv4 addresses and selects one adapter. A comma list of adapters from an older or hand-edited setting stays selectable as "not found".
 - Windows is not supported yet.
 
 ## Fixed after the code review of 2026-11-10

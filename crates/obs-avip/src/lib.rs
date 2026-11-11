@@ -6,6 +6,7 @@ pub mod convert;
 pub mod finder;
 pub mod module;
 pub mod ndi;
+pub mod netconfig;
 pub mod resume;
 pub mod send;
 pub mod settings;
