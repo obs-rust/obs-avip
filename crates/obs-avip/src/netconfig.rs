@@ -9,7 +9,8 @@
 //! first settings. So a change applies at the next OBS start.
 //!
 //! The user picks where the settings come from:
-//! - the system settings (NDI Access Manager, `~/.ndi`), the default;
+//! - the system settings (NDI Access Manager, or the file in `~/.ndi`;
+//!   on Windows also `C:\ProgramData\NDI`), the default;
 //! - obs-avip's settings: obs-avip writes the file into its own config folder
 //!   and points `NDI_CONFIG_DIR` there before it loads the runtime.
 //!
@@ -265,7 +266,7 @@ impl ConfigDir {
     pub fn describe(&self, use_own: bool) -> String {
         match self {
             ConfigDir::System => {
-                "NDI settings: the system settings (NDI Access Manager, ~/.ndi)".to_string()
+                "NDI settings: the system settings (NDI Access Manager or NDI's own config file)".to_string()
             }
             ConfigDir::Own(d) => format!("NDI settings: obs-avip's network settings ({d})"),
             ConfigDir::UserEnv(d) if use_own => format!(

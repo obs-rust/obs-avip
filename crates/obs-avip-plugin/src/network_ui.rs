@@ -19,8 +19,9 @@ use obs_avip::netconfig::{
     TRI_DEFAULT, TRI_OFF, TRI_ON,
 };
 
-use crate::{log, obs_current_module, rtld_default, user_config, SourceInfo};
+use crate::{log, obs_current_module, user_config, SourceInfo};
 
+#[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
 extern "C" {
     fn obs_register_source_s(info: *const SourceInfo, size: usize);
     fn obs_source_create_private(
@@ -80,7 +81,6 @@ extern "C" {
     fn config_save(config: *mut c_void) -> c_int;
     fn obs_module_get_config_path(module: *mut c_void, file: *const c_char) -> *mut c_char;
     fn bfree(ptr: *mut c_void);
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
 }
 
 const SETTINGS_ID: &CStr = c"obs_avip_network_settings";
@@ -237,7 +237,11 @@ unsafe fn own_dir() -> Option<String> {
     }
     let dir = text(p);
     bfree(p.cast());
-    Some(dir)
+    // Absolute: in Windows portable mode libobs gives a path relative to
+    // the working directory, and NDI_CONFIG_DIR must not depend on it.
+    std::path::absolute(&dir)
+        .ok()
+        .map(|d| d.to_string_lossy().into_owned())
 }
 
 /// Write the runtime's config file from `[AVIPNetwork]`; returns its text.
@@ -384,7 +388,7 @@ unsafe extern "C" fn get_properties(_: *mut c_void) -> *mut c_void {
     );
     obs_property_list_add_string(
         source,
-        c"The system (NDI Access Manager, ~/.ndi)".as_ptr(),
+        c"The system (NDI Access Manager or NDI's own config file)".as_ptr(),
         ckey(SOURCE_SYSTEM).as_ptr(),
     );
     obs_property_list_add_string(
@@ -540,10 +544,7 @@ unsafe extern "C" fn open_window(_: *mut c_void) {
         s.as_ref().map(|s| s.0).unwrap_or(null_mut())
     };
     fill(source);
-    let open = dlsym(
-        rtld_default(),
-        c"obs_frontend_open_source_properties".as_ptr(),
-    );
+    let open = crate::frontend_sym(c"obs_frontend_open_source_properties");
     if open.is_null() {
         log(100, "this OBS has no obs_frontend_open_source_properties");
         return;
@@ -572,7 +573,7 @@ pub(crate) unsafe fn register() {
         hide: None,
     };
     obs_register_source_s(&info, std::mem::size_of::<SourceInfo>());
-    let add = dlsym(rtld_default(), c"obs_frontend_add_tools_menu_item".as_ptr());
+    let add = crate::frontend_sym(c"obs_frontend_add_tools_menu_item");
     if add.is_null() {
         return;
     }
@@ -583,6 +584,7 @@ pub(crate) unsafe fn register() {
 
 /// Release the settings source (unload).
 pub(crate) unsafe fn close() {
+    #[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
     extern "C" {
         fn obs_source_release(source: *mut c_void);
     }

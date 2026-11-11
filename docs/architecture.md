@@ -9,7 +9,9 @@
 
 The rule for new code: a decision goes into the core with a test against the mock; the shell only translates. The core makes no libobs calls and has no global state, so it can later move into the obs-rust tree as a crate without change (see [roadmap.md](roadmap.md)).
 
-No NDI SDK file is in the repository. `ndi.rs` declares the structs and functions it uses, following the SDK's MIT-licensed headers (see NOTICE). The runtime is loaded with `dlopen` (`ndi::candidates` gives the search order, NDI 6 only).
+No NDI SDK file is in the repository. `ndi.rs` declares the structs and functions it uses, following the SDK's MIT-licensed headers (see NOTICE). The runtime is loaded with `dlopen`, on Windows with `LoadLibraryExW` (`ndi::candidates` gives the search order, NDI 6 only). A runtime in the plugin's own folder comes first, so a release can ship one. On Windows only full paths are tried (the plugin's folder, then `NDI_RUNTIME_DIR_V6`), never a bare name, which would search the working directory and `PATH`.
+
+On Linux and macOS the libobs functions resolve when OBS loads the plugin (macOS: `-undefined dynamic_lookup` in `.cargo/config.toml`). On Windows a DLL must import them at link time: the `extern` blocks carry `#[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]`, so the build needs no `obs.lib` and no OBS files.
 
 ## Loading
 
@@ -19,7 +21,9 @@ No NDI SDK file is in the repository. `ndi.rs` declares the structs and function
 4. On `OBS_FRONTEND_EVENT_FINISHED_LOADING` it creates "NDI Main Output" and "NDI Preview Output" from `[NDIPlugin]` and starts the enabled ones.
 5. `obs_module_unload` closes the outputs and the settings source and calls `NDIlib_destroy`.
 
-The frontend functions (`obs_frontend_*`) are looked up with `dlsym` at run time, so the plugin also loads without a frontend (then without the main output and the menu item).
+The frontend functions (`obs_frontend_*`) are looked up at run time (`frontend_sym`: `dlsym` on Linux and macOS, `GetProcAddress` on `obs-frontend-api.dll` on Windows), so the plugin also loads without a frontend (then without the main output and the menu items).
+
+libobs can give the plugin's path and its config folder relative to the working directory (Windows portable mode: `../../plugins/obs-avip/obs-avip.dll`). Both are made absolute before use.
 
 ## Network settings
 

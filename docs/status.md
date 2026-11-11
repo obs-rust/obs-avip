@@ -11,9 +11,10 @@
 | Linux x86_64, obs-rust, 2026-11-10 (load) | 20 min against DistroAV 6.2.2 in the same production setup: +0.017 cores (+2.7 %), the same package power and temperature, about 10 MB less memory. |
 | macOS 27, obs-rust nightly 20261107, 2026-11-11 (network settings) | Default: "the system settings", every sender listed. obs-avip settings with recv group `zz-none`: the file holds only that key, no sender listed. `NDI_CONFIG_DIR` set at launch: it wins, the log says obs-avip's settings are not used. The window: groups editable only with "obs-avip" selected, the adapter list, the restart line. NDI runtime 6.0.1. |
 | Linux x86_64, obs-rust 63bf6e9dd, 2026-11-11 (network settings) | The same three start-ups in a separate OBS (own HOME): the log lines, the file and the source list as on macOS (3 senders, none, 3). NDI runtime 6.3.2 reads the settings once per process, as 6.0.1 on macOS (file change, env change, `NDIlib_destroy` + `NDIlib_initialize`). |
-| Unit tests (82, no NDI runtime) | Settings contract against DistroAV, conversion, field weaving, resume state machine and `Receiver` against the mock, the TCP probe, finder, sender (buffers, packing, frame rate), tally, show/hide rules, registration decision, runtime search order, the network settings file, its source decision, the adapter list and the restart rule. |
+| Windows 11 x64 (virtual machine, software renderer), obs-rust 1.0.1-beta.20261108 portable, 2026-11-11 | NDI runtime 6.3.2 next to the plugin (the shipped layout) loads first. The four senders on the network are listed; a 4K HDMI encoder received (latency Lowest, 640x360), the picture moving, 0 skipped frames in 1,959. The main output is received by obs-avip on macOS (1024x640, connected in 59 to 76 ms, 4 times in a row) and by a plain NDI SDK receiver (182 frames in 6 s). Network settings: the same three start-ups as on Linux and macOS, with the test OBS's own output as the observable (1, none, 1): the runtime takes `NDI_CONFIG_DIR` that obs-avip sets. `windows/install.ps1 -Portable -NdiRuntime`. |
+| Unit tests (84, no NDI runtime) | Settings contract against DistroAV, conversion, field weaving, resume state machine and `Receiver` against the mock, the TCP probe, finder, sender (buffers, packing, frame rate), tally, show/hide rules, registration decision, runtime search order (Linux, macOS, Windows, the plugin's own folder first), the network settings file, its source decision, the adapter list and the restart rule. |
 
-Not tested: Windows (it does not build there: the loader knows only Linux and macOS), OBS Studio (only obs-rust), a sender that delivers NV12 or I420 (none of the tested senders did), 16-bit senders, more than 2 audio channels from a real sender, HDR (HLG) senders.
+Not tested: Windows on a real GPU and the install to `C:\ProgramData` (only portable mode), Windows on ARM (not built), OBS Studio (only obs-rust), a sender that delivers NV12 or I420 (none of the tested senders did), 16-bit senders, more than 2 audio channels from a real sender, HDR (HLG) senders.
 
 ## Measured
 
@@ -44,7 +45,8 @@ Not tested: Windows (it does not build there: the loader knows only Linux and ma
 - The network settings apply at the next OBS start: the NDI runtime reads them once per process (see [architecture.md](architecture.md#network-settings)).
 - Groups limit what discovery lists, not a connection to a sender that a source already knows: with a receive group that hides a sender, a saved source of that sender still connected.
 - The adapter list shows IPv4 addresses and selects one adapter. A comma list of adapters from an older or hand-edited setting stays selectable as "not found".
-- Windows is not supported yet.
+- Windows: x64 only. The firewall must allow OBS on the network (it asks at the first NDI use).
+- Windows, seen once: the first two receives on macOS of the Windows output, a minute after the test OBS started and right after its firewall rule was changed, got no frame for 12 s while the sender answered. A plain SDK receiver in between and the next four receives worked at once. Not reproduced.
 
 ## Fixed after the code review of 2026-11-10
 

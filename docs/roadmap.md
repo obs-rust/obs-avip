@@ -10,7 +10,7 @@ To do in this step:
 - Check the review fixes in [status.md](status.md) that have no real-sender test yet: a sender that delivers NV12 or I420 (an NDI HX phone camera delivered UYVY), an HLG sender, the output settings window, a sender that stays reachable and sends no frame at all.
 - CI: build and test both crates on Linux and macOS (the tests run against the mock, no NDI runtime needed).
 - A release: one archive per platform with the plugin and the install steps.
-- Windows: the loader (`ndi::Os`, `LoadLibrary`, the NDI runtime path from `NDI_RUNTIME_DIR_V6`), the build, and a test on a Windows machine.
+- Windows: done for x64 (2026-11-11): the loader, the build without `obs.lib` (`raw-dylib`), `windows/install.ps1`, tested in a virtual machine. Left: a test on a real GPU and with the `C:\ProgramData` install.
 
 ## 2. In the obs-rust tree ("inline")
 

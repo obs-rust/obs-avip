@@ -4,7 +4,7 @@ obs-avip ("audio and video over IP") is an OBS plugin in Rust. It receives and s
 
 NDI® is a registered trademark of Vizrt NDI AB. More about NDI: https://ndi.video.
 
-**Status: 0.1.0, early.** It was tested on Linux in place of DistroAV in a production setup, and on macOS with the obs-rust nightly. It is not built or tested on Windows. Read [docs/status.md](docs/status.md) before you use it for a production show.
+**Status: 0.1.0, early.** It was tested on Linux in place of DistroAV in a production setup, on macOS with the obs-rust nightly, and on Windows x64 with the obs-rust nightly in a virtual machine. Read [docs/status.md](docs/status.md) before you use it for a production show.
 
 ## What it does
 
@@ -19,11 +19,13 @@ What it does not do: see "Limitations" in [docs/status.md](docs/status.md).
 
 ## Requirements
 
-- obs-rust (libobs API 33), 64-bit Linux or macOS 13 or later. OBS Studio 31 or later should work (same API) but is not tested.
+- obs-rust (libobs API 33), 64-bit Linux, macOS 13 or later, or Windows 10/11 x64. OBS Studio 31 or later should work (same API) but is not tested.
 - The NDI 6 runtime, installed on the computer:
   - Linux: `libndi.so.6` in `/usr/lib`, `/usr/lib64`, `/usr/local/lib`, the directory in `NDI_RUNTIME_DIR_V6`, or the loader's search path. Get it from the NDI SDK for Linux (https://ndi.video/for-developers/ndi-sdk/) or your distribution's package (for example `ndi-sdk` in the AUR).
   - macOS: `libndi.dylib` in `/usr/local/lib` or in `NDI_RUNTIME_DIR_V6`. The NDI Tools or the NDI SDK for Apple install it.
-- To build: Rust (stable). The repository uses `soldr` as the cargo front end (`uvx soldr cargo ...`); plain `cargo` also works.
+  - Windows: `Processing.NDI.Lib.x64.dll` in `NDI_RUNTIME_DIR_V6` (the NDI 6 Runtime installer and the NDI Tools set it), or next to the plugin (from the NDI SDK for Windows, `Bin\x64`, with `Processing.NDI.Lib.Licenses.txt`).
+  - On every system a runtime next to the plugin is used first.
+- To build: Rust (stable); on Windows the MSVC toolchain (Visual Studio Build Tools with C++). The repository uses `soldr` as the cargo front end (`uvx soldr cargo ...`); plain `cargo` also works.
 
 ## Build and install
 
@@ -39,11 +41,21 @@ macOS (installs `obs-avip.plugin` to `~/Library/Application Support/obs-studio/p
 macos/install.sh
 ```
 
+Windows (installs to `C:\ProgramData\obs-studio\plugins\obs-avip`; run PowerShell as administrator):
+
+```powershell
+windows\install.ps1
+windows\install.ps1 -Portable C:\path\to\obs          # a portable OBS (started with --portable)
+windows\install.ps1 -NdiRuntime C:\path\to\Bin\x64    # also copy the NDI runtime next to the plugin
+```
+
 obs-rust loads user plugins from the `obs-studio` folder, also when its own settings are in `obs-studio-rust`.
+
+On Windows, the firewall asks the first time OBS uses NDI. Allow it on private networks: without that, OBS finds and receives no NDI senders on the network (its own outputs still show).
 
 To replace DistroAV: disable or remove DistroAV, install obs-avip, then start OBS. Your NDI sources and the main output come back with their saved settings. To go back, remove obs-avip and enable DistroAV again.
 
-To remove obs-avip: delete the `obs-avip` folder (Linux) or `obs-avip.plugin` (macOS) from the plugin folder.
+To remove obs-avip: delete the `obs-avip` folder (Linux, Windows) or `obs-avip.plugin` (macOS) from the plugin folder.
 
 ## Test
 
