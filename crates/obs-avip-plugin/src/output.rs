@@ -26,6 +26,7 @@ use obs_avip::send::{self, OutFormat, Sender, VideoIn};
 
 use crate::{log, ndi_plugin_bool, user_config, NDI};
 
+#[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
 extern "C" {
     fn obs_register_output_s(info: *const OutputInfo, size: usize);
     fn obs_output_video(output: *mut c_void) -> *mut c_void;
@@ -72,7 +73,6 @@ extern "C" {
         name: *const c_char,
     ) -> bool;
     fn os_gettime_ns() -> u64;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
     fn obs_output_get_name(output: *mut c_void) -> *const c_char;
     fn obs_output_get_settings(output: *mut c_void) -> *mut c_void;
     fn obs_output_get_signal_handler(output: *mut c_void) -> *mut c_void;
@@ -416,10 +416,7 @@ pub(crate) unsafe fn register() {
     };
     obs_register_output_s(&info, std::mem::size_of::<OutputInfo>());
     // The main output needs the frontend: wait for its "finished loading".
-    let add = dlsym(
-        crate::rtld_default(),
-        c"obs_frontend_add_event_callback".as_ptr(),
-    );
+    let add = crate::frontend_sym(c"obs_frontend_add_event_callback");
     if add.is_null() {
         log(300, "no frontend: the main output is not created");
         return;
@@ -731,7 +728,7 @@ unsafe impl Send for View {}
 static PREVIEW: Mutex<Option<View>> = Mutex::new(None);
 
 unsafe fn frontend<T: Copy>(name: &CStr) -> Option<T> {
-    let f = dlsym(crate::rtld_default(), name.as_ptr());
+    let f = crate::frontend_sym(name);
     (!f.is_null()).then(|| std::mem::transmute_copy(&f))
 }
 

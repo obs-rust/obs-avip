@@ -19,10 +19,10 @@ use obs_avip::ndi::Api;
 
 use crate::output::{self, ndi_plugin_string};
 use crate::{
-    log, ndi_plugin_bool, reload_tally, rtld_default, spawn_background, user_config, SourceInfo,
-    NDI, SHUTDOWN,
+    log, ndi_plugin_bool, reload_tally, spawn_background, user_config, SourceInfo, NDI, SHUTDOWN,
 };
 
+#[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
 extern "C" {
     fn obs_register_source_s(info: *const SourceInfo, size: usize);
     fn obs_source_create_private(
@@ -63,7 +63,6 @@ extern "C" {
         val: *const c_char,
     );
     fn config_save(config: *mut c_void) -> c_int;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
     fn obs_queue_task(
         kind: c_int,
         task: unsafe extern "C" fn(*mut c_void),
@@ -287,10 +286,7 @@ unsafe extern "C" fn open_window(_: *mut c_void) {
         s.as_ref().map(|s| s.0).unwrap_or(null_mut())
     };
     fill(source);
-    let open = dlsym(
-        rtld_default(),
-        c"obs_frontend_open_source_properties".as_ptr(),
-    );
+    let open = crate::frontend_sym(c"obs_frontend_open_source_properties");
     if open.is_null() {
         log(100, "this OBS has no obs_frontend_open_source_properties");
         return;
@@ -319,7 +315,7 @@ pub(crate) unsafe fn register() {
         hide: None,
     };
     obs_register_source_s(&info, std::mem::size_of::<SourceInfo>());
-    let add = dlsym(rtld_default(), c"obs_frontend_add_tools_menu_item".as_ptr());
+    let add = crate::frontend_sym(c"obs_frontend_add_tools_menu_item");
     if add.is_null() {
         return;
     }
@@ -334,6 +330,7 @@ pub(crate) unsafe fn register() {
 
 /// Release the settings source (unload).
 pub(crate) unsafe fn close() {
+    #[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
     extern "C" {
         fn obs_source_release(source: *mut c_void);
     }

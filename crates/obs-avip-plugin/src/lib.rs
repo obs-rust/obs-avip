@@ -31,8 +31,10 @@ mod settings_ui;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
+#[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
 extern "C" {
     fn blog(level: c_int, fmt: *const c_char, ...);
+    fn obs_get_module_binary_path(module: *mut c_void) -> *const c_char;
     fn obs_obj_get_data(obj: *mut c_void) -> *mut c_void;
     fn obs_source_get_settings(source: *mut c_void) -> *mut c_void;
     fn obs_source_update(source: *mut c_void, settings: *mut c_void);
@@ -64,7 +66,6 @@ extern "C" {
         section: *const c_char,
         name: *const c_char,
     ) -> bool;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
     fn obs_properties_create() -> *mut c_void;
     fn obs_properties_add_list(
         props: *mut c_void,
@@ -190,20 +191,47 @@ fn join_background() {
     }
 }
 
-/// `RTLD_DEFAULT` for `dlsym`: search every loaded image. It is 0 on Linux
-/// and `(void *)-2` on macOS, where a null handle finds nothing.
-pub(crate) fn rtld_default() -> *mut c_void {
-    if cfg!(target_os = "macos") {
+/// A frontend function (`obs_frontend_*`), looked up at run time so the
+/// module also loads without the frontend. Null when it is missing.
+#[cfg(unix)]
+pub(crate) unsafe fn frontend_sym(name: &CStr) -> *mut c_void {
+    extern "C" {
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+    // RTLD_DEFAULT: search every loaded image. 0 on Linux, (void *)-2 on
+    // macOS, where a null handle finds nothing.
+    let any = if cfg!(target_os = "macos") {
         -2isize as *mut c_void
     } else {
         null_mut()
+    };
+    dlsym(any, name.as_ptr())
+}
+
+/// A frontend function (`obs_frontend_*`) from `obs-frontend-api.dll`, which
+/// the frontend has loaded. Null without a frontend.
+#[cfg(windows)]
+pub(crate) unsafe fn frontend_sym(name: &CStr) -> *mut c_void {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     }
+    let dll: Vec<u16> = "obs-frontend-api.dll"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let module = GetModuleHandleW(dll.as_ptr());
+    if module.is_null() {
+        return null_mut();
+    }
+    GetProcAddress(module, name.as_ptr())
 }
 
 /// The frontend's user config (`user.ini`), or null without a frontend. The
 /// call is looked up at run time, so the module also loads without the frontend.
 pub(crate) unsafe fn user_config() -> *mut c_void {
-    let get = dlsym(rtld_default(), c"obs_frontend_get_user_config".as_ptr());
+    let get = frontend_sym(c"obs_frontend_get_user_config");
     if get.is_null() {
         return null_mut();
     }
@@ -1000,6 +1028,17 @@ pub unsafe extern "C" fn obs_module_post_load() {
     // The runtime reads its network settings once, when it initializes.
     network_ui::prepare();
     let env = std::env::var("NDI_RUNTIME_DIR_V6").ok();
+    // A runtime shipped next to the plugin comes first. libobs can give the
+    // plugin's path relative to the working directory (Windows portable
+    // mode: "../../plugins/obs-avip/obs-avip.dll"); the loader needs an
+    // absolute one.
+    let own_dir = {
+        let p = obs_get_module_binary_path(obs_current_module());
+        (!p.is_null())
+            .then(|| CStr::from_ptr(p).to_string_lossy().into_owned())
+            .and_then(|p| std::path::absolute(&p).ok())
+            .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
+    };
     let list = |dir: &str| -> Vec<String> {
         std::fs::read_dir(dir)
             .map(|d| {
@@ -1009,7 +1048,12 @@ pub unsafe extern "C" fn obs_module_post_load() {
             })
             .unwrap_or_default()
     };
-    let lib = match Lib::load(&ndi::candidates(Os::current(), env.as_deref(), &list)) {
+    let lib = match Lib::load(&ndi::candidates(
+        Os::current(),
+        own_dir.as_deref(),
+        env.as_deref(),
+        &list,
+    )) {
         Ok(lib) => lib,
         Err(e) => {
             let line = CString::new(format!(

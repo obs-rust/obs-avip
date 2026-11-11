@@ -5,7 +5,7 @@
 //! Everything that talks to NDI goes through [`Api`], so the receive logic can
 //! run against [`mock::Mock`] in tests and in CI, where no runtime is installed.
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_void, CStr};
 
 pub type Handle = *mut c_void;
 
@@ -163,36 +163,64 @@ pub struct FindCreate {
 pub enum Os {
     Linux,
     MacOs,
+    Windows,
 }
 
 impl Os {
     pub fn current() -> Os {
         if cfg!(target_os = "macos") {
             Os::MacOs
+        } else if cfg!(windows) {
+            Os::Windows
         } else {
             Os::Linux
         }
     }
 }
 
+/// The NDI 6 runtime's file name on Windows (x64 only).
+pub const WINDOWS_RUNTIME: &str = "Processing.NDI.Lib.x64.dll";
+
 /// The NDI 6 runtime major version the struct layouts here follow.
 pub const RUNTIME_MAJOR: u32 = 6;
 
-/// Where to look for the runtime, in order. `env_dir` is `NDI_RUNTIME_DIR_V6`;
-/// `list_dir` gives the file names in a directory (empty when it does not exist).
+/// Where to look for the runtime, in order. `own_dir` is the plugin's own
+/// folder (a runtime shipped with the plugin comes first); `env_dir` is
+/// `NDI_RUNTIME_DIR_V6`; `list_dir` gives the file names in a directory
+/// (empty when it does not exist).
 ///
-/// The search follows DistroAV's (`load_ndilib`): the environment directory,
-/// then `/usr/lib`, `/usr/lib64` and `/usr/local/lib`. On Linux it takes only
-/// `libndi.so.6*` (DistroAV takes the highest major, which could load a runtime
-/// whose structs differ), newest name first, and ends with the bare
-/// `libndi.so.6` for the loader's own search path. On macOS it takes
-/// `libndi.dylib` in each directory, then the bare name.
+/// After the plugin's folder the search follows DistroAV's (`load_ndilib`):
+/// the environment directory, then `/usr/lib`, `/usr/lib64` and
+/// `/usr/local/lib`. On Linux it takes only `libndi.so.6*` (DistroAV takes the
+/// highest major, which could load a runtime whose structs differ), newest
+/// name first, and ends with the bare `libndi.so.6` for the loader's own
+/// search path. On macOS it takes `libndi.dylib` in each directory, then the
+/// bare name. On Windows it takes `Processing.NDI.Lib.x64.dll` in the plugin's
+/// folder and in `NDI_RUNTIME_DIR_V6` (the NDI runtime installer sets it), and
+/// never a bare name: that would search the working directory and `PATH`.
 pub fn candidates(
     os: Os,
+    own_dir: Option<&str>,
     env_dir: Option<&str>,
     list_dir: &dyn Fn(&str) -> Vec<String>,
 ) -> Vec<String> {
-    let mut dirs: Vec<&str> = env_dir.filter(|d| !d.is_empty()).into_iter().collect();
+    let own_dir = own_dir.filter(|d| !d.is_empty());
+    let env_dir = env_dir.filter(|d| !d.is_empty());
+    if os == Os::Windows {
+        return [own_dir, env_dir]
+            .into_iter()
+            .flatten()
+            .map(|d| d.trim_end_matches(['\\', '/']))
+            .filter(|d| {
+                Some(*d) == env_dir.map(|e| e.trim_end_matches(['\\', '/']))
+                    || list_dir(d)
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case(WINDOWS_RUNTIME))
+            })
+            .map(|d| format!("{d}\\{WINDOWS_RUNTIME}"))
+            .collect();
+    }
+    let mut dirs: Vec<&str> = own_dir.into_iter().chain(env_dir).collect();
     dirs.extend(["/usr/lib", "/usr/lib64", "/usr/local/lib"]);
     let mut out = Vec::new();
     for dir in dirs {
@@ -219,18 +247,73 @@ pub fn candidates(
                     out.push(format!("{dir}/libndi.dylib"));
                 }
             }
+            Os::Windows => unreachable!("handled above"),
         }
     }
     out.push(match os {
         Os::Linux => format!("libndi.so.{RUNTIME_MAJOR}"),
-        Os::MacOs => "libndi.dylib".to_string(),
+        _ => "libndi.dylib".to_string(),
     });
     out
 }
 
-extern "C" {
-    fn dlopen(path: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+/// Opening a shared library and looking up a symbol, per platform.
+#[cfg(unix)]
+mod dl {
+    use std::ffi::{c_char, c_int, c_void, CStr, CString};
+
+    extern "C" {
+        fn dlopen(path: *const c_char, flags: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+
+    pub unsafe fn open(path: &str) -> Result<*mut c_void, String> {
+        let cpath = CString::new(path).map_err(|_| "NUL in path".to_string())?;
+        let lib = dlopen(cpath.as_ptr(), 2 /* RTLD_NOW */);
+        if lib.is_null() {
+            Err("cannot open".into())
+        } else {
+            Ok(lib)
+        }
+    }
+
+    pub unsafe fn sym(lib: *mut c_void, name: &CStr) -> *mut c_void {
+        dlsym(lib, name.as_ptr())
+    }
+}
+
+#[cfg(windows)]
+mod dl {
+    use std::ffi::{c_char, c_void, CStr};
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+        fn GetLastError() -> u32;
+    }
+
+    /// `LOAD_WITH_ALTERED_SEARCH_PATH`: the runtime's own dependencies are
+    /// looked up next to it, not next to obs64.exe.
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x8;
+
+    pub unsafe fn open(path: &str) -> Result<*mut c_void, String> {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let lib = LoadLibraryExW(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_WITH_ALTERED_SEARCH_PATH,
+        );
+        if lib.is_null() {
+            Err(format!("cannot open (error {})", GetLastError()))
+        } else {
+            Ok(lib)
+        }
+    }
+
+    pub unsafe fn sym(lib: *mut c_void, name: &CStr) -> *mut c_void {
+        GetProcAddress(lib, name.as_ptr())
+    }
 }
 
 type RecvCreateFn = unsafe extern "C" fn(*const RecvCreate) -> Handle;
@@ -255,7 +338,7 @@ type FindCreateFn = unsafe extern "C" fn(*const FindCreate) -> Handle;
 type FindWaitFn = unsafe extern "C" fn(Handle, u32) -> bool;
 type FindSourcesFn = unsafe extern "C" fn(Handle, *mut u32) -> *const Source;
 
-/// The NDI runtime, loaded with `dlopen`.
+/// The NDI runtime, loaded with `dlopen` (`LoadLibraryExW` on Windows).
 pub struct Lib {
     pub path: String,
     version: VersionFn,
@@ -302,13 +385,9 @@ impl Lib {
     }
 
     unsafe fn open(path: &str) -> Result<Lib, String> {
-        let cpath = CString::new(path).map_err(|_| "NUL in path".to_string())?;
-        let lib = dlopen(cpath.as_ptr(), 2 /* RTLD_NOW */);
-        if lib.is_null() {
-            return Err("cannot open".into());
-        }
+        let lib = dl::open(path)?;
         let sym = |name: &CStr| -> Result<*mut c_void, String> {
-            let p = dlsym(lib, name.as_ptr());
+            let p = dl::sym(lib, name);
             if p.is_null() {
                 Err(format!("missing {}", name.to_string_lossy()))
             } else {
@@ -879,6 +958,7 @@ pub mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     fn dirs(
         listing: &'static [(&'static str, &'static [&'static str])],
@@ -905,7 +985,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            candidates(Os::Linux, Some("/opt/ndi"), &list),
+            candidates(Os::Linux, None, Some("/opt/ndi"), &list),
             vec![
                 "/opt/ndi/libndi.so.6.3.2",
                 "/opt/ndi/libndi.so.6",
@@ -917,20 +997,73 @@ mod tests {
 
     #[test]
     fn linux_without_a_runtime_still_tries_the_loader_search() {
-        assert_eq!(candidates(Os::Linux, None, &dirs(&[])), vec!["libndi.so.6"]);
+        assert_eq!(
+            candidates(Os::Linux, None, None, &dirs(&[])),
+            vec!["libndi.so.6"]
+        );
     }
 
     #[test]
     fn macos_takes_the_dylib_in_each_directory_then_the_bare_name() {
         let list = dirs(&[("/usr/local/lib", &["libndi.dylib"])]);
         assert_eq!(
-            candidates(Os::MacOs, Some("/Library/NDI"), &list),
+            candidates(Os::MacOs, None, Some("/Library/NDI"), &list),
             vec![
                 "/Library/NDI/libndi.dylib",
                 "/usr/local/lib/libndi.dylib",
                 "libndi.dylib"
             ]
         );
+    }
+
+    #[test]
+    fn a_runtime_in_the_plugin_folder_comes_first() {
+        let list = dirs(&[
+            ("/opt/obs/plugins/bin", &["libndi.so.6.3.2"]),
+            ("/usr/lib", &["libndi.so.6.2.0"]),
+        ]);
+        assert_eq!(
+            candidates(Os::Linux, Some("/opt/obs/plugins/bin"), None, &list),
+            vec![
+                "/opt/obs/plugins/bin/libndi.so.6.3.2",
+                "/usr/lib/libndi.so.6.2.0",
+                "libndi.so.6",
+            ]
+        );
+        let list = dirs(&[("/Plugins/obs-avip.plugin/Contents/MacOS", &["libndi.dylib"])]);
+        assert_eq!(
+            candidates(
+                Os::MacOs,
+                Some("/Plugins/obs-avip.plugin/Contents/MacOS"),
+                None,
+                &list
+            )[0],
+            "/Plugins/obs-avip.plugin/Contents/MacOS/libndi.dylib"
+        );
+    }
+
+    #[test]
+    fn windows_takes_the_plugin_folder_then_the_runtime_folder_never_a_bare_name() {
+        const OWN: &str = r"C:\ProgramData\obs-studio\plugins\obs-avip\bin\64bit";
+        const LISTING: &[(&str, &[&str])] =
+            &[(OWN, &["obs-avip.dll", "processing.ndi.lib.x64.dll"])];
+        let own = OWN;
+        let env = r"C:\Program Files\NDI\NDI 6 Runtime\v6\";
+        let list = dirs(LISTING);
+        assert_eq!(
+            candidates(Os::Windows, Some(own), Some(env), &list),
+            vec![
+                format!(r"{own}\Processing.NDI.Lib.x64.dll"),
+                r"C:\Program Files\NDI\NDI 6 Runtime\v6\Processing.NDI.Lib.x64.dll".to_string(),
+            ]
+        );
+        // No runtime next to the plugin: only the runtime folder.
+        assert_eq!(
+            candidates(Os::Windows, Some(own), Some(env), &dirs(&[])).len(),
+            1
+        );
+        // No runtime anywhere: nothing to try, not a search of PATH.
+        assert!(candidates(Os::Windows, Some(own), None, &dirs(&[])).is_empty());
     }
 
     #[test]
