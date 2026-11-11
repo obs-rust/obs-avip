@@ -23,7 +23,7 @@ The frontend functions (`obs_frontend_*`) are looked up with `dlsym` at run time
 
 ## Network settings
 
-The Standard NDI SDK has no API for its network settings. It reads one file, `ndi-config.v1.json`, from `$HOME/.ndi` or from `NDI_CONFIG_DIR`, once per process, at the first `NDIlib_initialize`. Checked with NDI 6.0.1 on macOS, with a recv group as the observable:
+The Standard NDI SDK has no API for its network settings. It reads one file, `ndi-config.v1.json`, from `$HOME/.ndi` or from `NDI_CONFIG_DIR`, once per process, at the first `NDIlib_initialize`. Checked with NDI 6.0.1 on macOS and 6.3.2 on Linux, with a recv group as the observable (the `dlclose` row: macOS only):
 
 | After the first initialize | Settings used |
 |---|---|
