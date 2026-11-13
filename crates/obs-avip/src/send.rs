@@ -232,8 +232,15 @@ impl<'a> Sender<'a> {
     /// A new video format or size (a filter's source changed size). Waits until
     /// the SDK is done with the last frame, then sizes both buffers again.
     pub fn set_video(&mut self, format: OutFormat, width: u32, height: u32, fps: (u32, u32)) {
-        let _ = (format, width, height, fps);
-        todo!()
+        // SAFETY: a flush returns when the SDK no longer reads either buffer.
+        unsafe { self.api.send_video_async(self.send, None) };
+        let (len, _) = format.packed(width, height);
+        self.format = format;
+        self.width = width;
+        self.height = height;
+        self.rate = (fps.0 as i32, fps.1.max(1) as i32);
+        self.bufs = [vec![0; len], vec![0; len]];
+        self.next = 0;
     }
 
     /// Planar float audio: one slice of `frames` samples per channel.

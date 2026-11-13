@@ -35,7 +35,8 @@ Not tested: Windows on a real GPU and the install to `C:\ProgramData` (only port
 
 ## Limitations
 
-- No PTZ control, no NDI filters, no NDI audio-only senders as their own type.
+- No PTZ control, no NDI audio-only senders as their own type.
+- The dedicated output filters send at OBS's frame rate, one frame behind the render (the read-back of the frame before). A filter on a scene or an image sends no audio (libobs gives filters audio only from sources with their own audio), as in DistroAV. As in DistroAV, they follow libobs's "showing" state: a source that is also in a projector, a properties window or the multiview keeps sending while its scene item is hidden.
 - No alpha output; UYVA sources are shown as UYVY (alpha dropped), as DistroAV does.
 - 16-bit formats (P216, PA16) are skipped with a log line. None of the tested senders delivered them: the SDK converted 10-bit senders to UYVY.
 - Single fields of a planar format (an interlaced NV12 or I420 sender) are skipped with a log line; packed fields are woven.

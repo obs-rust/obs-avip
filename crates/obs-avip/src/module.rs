@@ -25,8 +25,12 @@ pub enum Registration {
 
 /// `taken` holds the ids of [`IDS`] that another module provides.
 pub fn decide(taken: &[&'static str]) -> Registration {
-    let _ = taken;
-    todo!()
+    let taken: Vec<&'static str> = IDS.into_iter().filter(|id| taken.contains(id)).collect();
+    if taken.is_empty() {
+        Registration::Register
+    } else {
+        Registration::Refuse { taken }
+    }
 }
 
 impl Registration {

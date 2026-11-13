@@ -25,6 +25,7 @@ use obs_avip::tally::{self, Event, TallyConfig};
 use obs_avip::visibility;
 use std::cell::RefCell;
 
+mod filter;
 mod network_ui;
 mod output;
 mod settings_ui;
@@ -1103,14 +1104,18 @@ pub unsafe extern "C" fn obs_module_post_load() {
     };
     obs_register_source_s(&info, std::mem::size_of::<SourceInfo>());
     output::register();
+    filter::register();
     settings_ui::register();
     network_ui::register();
     log(
         300,
         &format!(
-            "registered '{}' and '{}'",
-            module::SOURCE_ID,
-            module::OUTPUT_ID
+            "registered {}",
+            module::IDS
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     );
 }

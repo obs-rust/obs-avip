@@ -29,8 +29,9 @@ pub const FORBIDDEN: &str = "\\/:*?\"<>|";
 
 /// Every forbidden character replaced with a space.
 pub fn sanitize(s: &str) -> String {
-    let _ = s;
-    todo!()
+    s.chars()
+        .map(|c| if FORBIDDEN.contains(c) { ' ' } else { c })
+        .collect()
 }
 
 /// The NDI name of a filter's stream, and which renames change it.
@@ -48,16 +49,22 @@ pub struct StreamName {
 /// sanitized again (a source name may hold a forbidden character). An empty
 /// template gives an empty name: the SDK then names the stream itself.
 pub fn stream_name(template: &str, source: &str, filter: &str) -> StreamName {
-    let _ = (template, source, filter);
-    todo!()
+    let template = sanitize(template);
+    let name = template
+        .replace(SOURCE_TOKEN, source)
+        .replace(FILTER_TOKEN, filter);
+    StreamName {
+        name: sanitize(&name),
+        watch_source: template.contains(SOURCE_TOKEN),
+        watch_filter: template.contains(FILTER_TOKEN),
+    }
 }
 
 /// Whether the video filter renders and sends this frame: the filter is
 /// enabled, its source is showing (in the program, the preview or a
 /// projector) and has a size.
 pub fn sends_video(enabled: bool, source_showing: bool, width: u32, height: u32) -> bool {
-    let _ = (enabled, source_showing, width, height);
-    todo!()
+    enabled && source_showing && width > 0 && height > 0
 }
 
 /// What the render thread does with the two stage surfaces in one frame.
@@ -83,14 +90,29 @@ pub struct Readback {
 impl Readback {
     /// A frame that renders at `width` x `height`.
     pub fn frame(&mut self, width: u32, height: u32) -> Step {
-        let _ = (width, height, &self.size, &self.staged, &self.next);
-        todo!()
+        let recreate = self.size != Some((width, height));
+        if recreate {
+            self.size = Some((width, height));
+            self.staged = [false; 2];
+            self.next = 0;
+        }
+        let stage = self.next;
+        let other = 1 - stage;
+        let read = self.staged[other].then_some(other);
+        self.staged[other] = false;
+        self.staged[stage] = true;
+        self.next = other;
+        Step {
+            recreate,
+            stage,
+            read,
+        }
     }
 
     /// A frame that does not render (the filter or the source is off): the
     /// staged frame is dropped, so a later frame never sends an old picture.
     pub fn idle(&mut self) {
-        todo!()
+        self.staged = [false; 2];
     }
 }
 
