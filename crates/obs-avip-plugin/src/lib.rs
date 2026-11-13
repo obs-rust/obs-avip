@@ -1015,12 +1015,20 @@ const SOURCE_ID_STATIC: &CStr = c"ndi_source";
 /// provides them, and only then load the NDI runtime.
 #[no_mangle]
 pub unsafe extern "C" fn obs_module_post_load() {
-    let source_id = ckey(module::SOURCE_ID);
-    let output_id = ckey(module::OUTPUT_ID);
-    let decision = module::decide(
-        !obs_source_get_display_name(source_id.as_ptr()).is_null(),
-        !obs_output_get_display_name(output_id.as_ptr()).is_null(),
-    );
+    // Sources and filters share one id space; outputs have their own.
+    let taken: Vec<&'static str> = module::IDS
+        .into_iter()
+        .filter(|id| {
+            let c = ckey(id);
+            let name = if *id == module::OUTPUT_ID {
+                obs_output_get_display_name(c.as_ptr())
+            } else {
+                obs_source_get_display_name(c.as_ptr())
+            };
+            !name.is_null()
+        })
+        .collect();
+    let decision = module::decide(&taken);
     if let Some(line) = decision.log_line() {
         log(200, &line);
         return;

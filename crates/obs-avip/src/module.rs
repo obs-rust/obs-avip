@@ -6,45 +6,36 @@
 //! (DistroAV, or a plugin built on the NDI Advanced SDK) already provides an
 //! id, this plugin registers nothing and does not load the NDI runtime.
 
+use crate::filter;
+
 pub const SOURCE_ID: &str = "ndi_source";
 pub const OUTPUT_ID: &str = "ndi_output";
+
+/// Every id the plugin registers, in the order of a log line.
+pub const IDS: [&str; 4] = [SOURCE_ID, OUTPUT_ID, filter::VIDEO_ID, filter::AUDIO_ID];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Registration {
     Register,
-    /// Another module provides one or both ids.
+    /// Another module provides these ids.
     Refuse {
-        source_taken: bool,
-        output_taken: bool,
+        taken: Vec<&'static str>,
     },
 }
 
-pub fn decide(source_taken: bool, output_taken: bool) -> Registration {
-    if source_taken || output_taken {
-        Registration::Refuse {
-            source_taken,
-            output_taken,
-        }
-    } else {
-        Registration::Register
-    }
+/// `taken` holds the ids of [`IDS`] that another module provides.
+pub fn decide(taken: &[&'static str]) -> Registration {
+    let _ = taken;
+    todo!()
 }
 
 impl Registration {
     /// One log line for a refusal; `None` when the plugin registers.
     pub fn log_line(&self) -> Option<String> {
-        let Registration::Refuse {
-            source_taken,
-            output_taken,
-        } = *self
-        else {
+        let Registration::Refuse { taken } = self else {
             return None;
         };
-        let ids: Vec<String> = [(source_taken, SOURCE_ID), (output_taken, OUTPUT_ID)]
-            .iter()
-            .filter(|(taken, _)| *taken)
-            .map(|(_, id)| format!("'{id}'"))
-            .collect();
+        let ids: Vec<String> = taken.iter().map(|id| format!("'{id}'")).collect();
         Some(format!(
             "another module (DistroAV?) provides {}: this plugin is not registered and does not load the NDI runtime",
             ids.join(", ")
@@ -57,30 +48,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registers_only_when_both_ids_are_free() {
-        assert_eq!(decide(false, false), Registration::Register);
-        assert_eq!(decide(false, false).log_line(), None);
-        for (s, o) in [(true, false), (false, true), (true, true)] {
+    fn registers_only_when_every_id_is_free() {
+        assert_eq!(decide(&[]), Registration::Register);
+        assert_eq!(decide(&[]).log_line(), None);
+        for id in IDS {
             assert_eq!(
-                decide(s, o),
-                Registration::Refuse {
-                    source_taken: s,
-                    output_taken: o
-                },
-                "{s} {o}"
+                decide(&[id]),
+                Registration::Refuse { taken: vec![id] },
+                "{id}"
             );
         }
+        // A filter id alone is enough: two modules cannot register one id.
+        assert_eq!(
+            decide(&[filter::AUDIO_ID]),
+            Registration::Refuse {
+                taken: vec!["ndi_audiofilter"]
+            }
+        );
     }
 
     #[test]
-    fn a_refusal_names_the_taken_ids_in_one_line() {
-        let line = decide(true, true).log_line().unwrap();
+    fn a_refusal_names_the_taken_ids_in_ids_order() {
+        let line = decide(&[OUTPUT_ID, SOURCE_ID]).log_line().unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("'ndi_source', 'ndi_output'"), "{line}");
         assert!(line.contains("not registered"), "{line}");
-        let line = decide(false, true).log_line().unwrap();
+        let line = decide(&[filter::VIDEO_ID]).log_line().unwrap();
         assert!(
-            line.contains("'ndi_output'") && !line.contains("'ndi_source'"),
+            line.contains("'ndi_filter'") && !line.contains("'ndi_source'"),
             "{line}"
         );
     }
