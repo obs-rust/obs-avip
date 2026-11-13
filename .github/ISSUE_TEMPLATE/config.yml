@@ -1,0 +1,5 @@
+# obs-avip's own issue config. Any file in this folder replaces the org-wide
+# defaults from obs-rust/.github, whose bug form and links point to upstream
+# OBS. Issues here are free form (#11).
+blank_issues_enabled: true
+contact_links: []
