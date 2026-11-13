@@ -3,6 +3,7 @@
 //! without the NDI runtime.
 
 pub mod convert;
+pub mod filter;
 pub mod finder;
 pub mod module;
 pub mod ndi;

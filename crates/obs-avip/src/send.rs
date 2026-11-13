@@ -229,6 +229,20 @@ impl<'a> Sender<'a> {
         self.next ^= 1;
     }
 
+    /// A new video format or size (a filter's source changed size). Waits until
+    /// the SDK is done with the last frame, then sizes both buffers again.
+    pub fn set_video(&mut self, format: OutFormat, width: u32, height: u32, fps: (u32, u32)) {
+        // SAFETY: a flush returns when the SDK no longer reads either buffer.
+        unsafe { self.api.send_video_async(self.send, None) };
+        let (len, _) = format.packed(width, height);
+        self.format = format;
+        self.width = width;
+        self.height = height;
+        self.rate = (fps.0 as i32, fps.1.max(1) as i32);
+        self.bufs = [vec![0; len], vec![0; len]];
+        self.next = 0;
+    }
+
     /// Planar float audio: one slice of `frames` samples per channel.
     pub fn audio(&mut self, planes: &[&[f32]], frames: u32, rate: u32, timestamp_ns: u64) {
         let n = frames as usize;
@@ -418,6 +432,61 @@ mod tests {
             timestamp: 1_234_567,
             prev_intact: None,
         }));
+    }
+
+    #[test]
+    fn a_new_size_waits_for_the_sdk_then_sends_the_new_size() {
+        let api = Mock::default();
+        // A filter's sender exists before its source has a size.
+        let mut s = sender(&api, OutFormat::Bgra, 0, 0, (25, 1));
+        s.set_video(OutFormat::Bgra, 2, 1, (25, 1));
+        let px: Vec<u8> = (1..=8).collect();
+        s.video(&VideoIn {
+            planes: [&px, &[], &[]],
+            linesize: [8, 0, 0],
+            timestamp_ns: 0,
+        });
+        s.set_video(OutFormat::Bgra, 1, 1, (30, 1));
+        s.video(&VideoIn {
+            planes: [&px[..4], &[], &[]],
+            linesize: [4, 0, 0],
+            timestamp_ns: 0,
+        });
+        drop(s);
+        let video: Vec<(i32, i32, i32)> = api
+            .calls()
+            .iter()
+            .filter_map(|c| match c {
+                Call::SendVideo {
+                    width,
+                    height,
+                    rate_n,
+                    ..
+                } => Some((*width, *height, *rate_n)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(video, vec![(2, 1, 25), (1, 1, 30)]);
+        // The resize flushed the SDK before the buffers changed: the first
+        // flush comes between the two frames, and the 2x1 frame was intact.
+        let calls = api.calls();
+        let first = calls
+            .iter()
+            .position(|c| matches!(c, Call::SendVideo { .. }))
+            .unwrap();
+        assert!(
+            matches!(
+                calls[first + 1],
+                Call::SendFlush {
+                    prev_intact: Some(true)
+                }
+            ),
+            "{calls:?}"
+        );
+        assert_eq!(
+            api.sent_video(),
+            vec![(1..=8).collect::<Vec<u8>>(), vec![1, 2, 3, 4]]
+        );
     }
 
     #[test]
