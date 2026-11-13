@@ -85,11 +85,18 @@ pub struct Readback {
     size: Option<(u32, u32)>,
     staged: [bool; 2],
     next: usize,
+    /// The OBS frame time of the last `frame`.
+    last: Option<u64>,
 }
 
 impl Readback {
-    /// A frame that renders at `width` x `height`.
-    pub fn frame(&mut self, width: u32, height: u32) -> Step {
+    /// A frame that renders at `width` x `height`, at OBS frame time
+    /// `time_ns`, with `interval_ns` between frames. libobs does not call a
+    /// filter that is disabled or whose source is not rendered, so a gap
+    /// in the frame times is a pause: the frame staged before it is old and
+    /// is dropped.
+    pub fn frame(&mut self, width: u32, height: u32, time_ns: u64, interval_ns: u64) -> Step {
+        let _ = (time_ns, interval_ns, &self.last);
         let recreate = self.size != Some((width, height));
         if recreate {
             self.size = Some((width, height));
@@ -189,10 +196,19 @@ mod tests {
         assert!(!sends_video(true, true, 1920, 0));
     }
 
+    const IV: u64 = 40_000_000;
+
+    /// A steady frame clock.
+    fn t(clock: &mut u64) -> u64 {
+        *clock += IV;
+        *clock
+    }
+
     #[test]
     fn a_frame_is_read_one_frame_after_it_is_staged() {
+        let mut clock = 0;
         let mut r = Readback::default();
-        let s1 = r.frame(4, 2);
+        let s1 = r.frame(4, 2, t(&mut clock), IV);
         assert_eq!(
             s1,
             Step {
@@ -201,7 +217,7 @@ mod tests {
                 read: None
             }
         );
-        let s2 = r.frame(4, 2);
+        let s2 = r.frame(4, 2, t(&mut clock), IV);
         assert_eq!(
             s2,
             Step {
@@ -210,7 +226,7 @@ mod tests {
                 read: Some(0)
             }
         );
-        let s3 = r.frame(4, 2);
+        let s3 = r.frame(4, 2, t(&mut clock), IV);
         assert_eq!(
             s3,
             Step {
@@ -223,26 +239,47 @@ mod tests {
 
     #[test]
     fn a_size_change_starts_again() {
+        let mut clock = 0;
         let mut r = Readback::default();
-        r.frame(4, 2);
-        r.frame(4, 2);
-        let s = r.frame(8, 4);
+        r.frame(4, 2, t(&mut clock), IV);
+        r.frame(4, 2, t(&mut clock), IV);
+        let s = r.frame(8, 4, t(&mut clock), IV);
         assert!(s.recreate);
         assert_eq!(s.read, None, "the staged frame has the old size");
-        let s = r.frame(8, 4);
+        let s = r.frame(8, 4, t(&mut clock), IV);
         assert!(!s.recreate);
         assert_eq!(s.read, Some(1 - s.stage));
     }
 
     #[test]
     fn a_pause_drops_the_staged_frame() {
+        let mut clock = 0;
         let mut r = Readback::default();
-        r.frame(4, 2);
-        r.frame(4, 2);
+        r.frame(4, 2, t(&mut clock), IV);
+        r.frame(4, 2, t(&mut clock), IV);
         r.idle();
-        let s = r.frame(4, 2);
+        let s = r.frame(4, 2, t(&mut clock), IV);
         assert!(!s.recreate, "same size: the surfaces stay");
         assert_eq!(s.read, None, "no old picture after the pause");
-        assert_eq!(r.frame(4, 2).read, Some(s.stage));
+        assert_eq!(r.frame(4, 2, t(&mut clock), IV).read, Some(s.stage));
+    }
+
+    #[test]
+    fn a_gap_in_the_frame_times_drops_the_staged_frame() {
+        // libobs skips a disabled filter: no idle() call, only a gap.
+        let mut r = Readback::default();
+        r.frame(4, 2, 40, 40);
+        r.frame(4, 2, 80, 40);
+        let s = r.frame(4, 2, 80 + 10 * 40, 40);
+        assert_eq!(s.read, None, "the frame of t=80 is old");
+        assert_eq!(r.frame(4, 2, 80 + 11 * 40, 40).read, Some(s.stage));
+        // Jitter up to 1.5 intervals is no gap.
+        let mut r = Readback::default();
+        r.frame(4, 2, 0, 40);
+        assert_eq!(r.frame(4, 2, 60, 40).read, Some(0));
+        // No interval known: no gap rule.
+        let mut r = Readback::default();
+        r.frame(4, 2, 0, 0);
+        assert_eq!(r.frame(4, 2, 1_000_000, 0).read, Some(0));
     }
 }

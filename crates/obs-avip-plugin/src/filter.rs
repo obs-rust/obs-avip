@@ -468,9 +468,11 @@ unsafe extern "C" fn update(data: *mut c_void, settings: *mut c_void) {
 unsafe extern "C" fn destroy(data: *mut c_void) {
     let f = Box::from_raw(data.cast::<Filter>());
     close(&f);
+    // The graphics context first, then the lock: the order of video_render
+    // (it runs inside the context and takes the lock).
+    obs_enter_graphics();
     let g = f.gfx.lock().unwrap();
     if !g.texrender.is_null() || g.surfaces.iter().any(|p| !p.is_null()) {
-        obs_enter_graphics();
         for s in g.surfaces {
             if !s.is_null() {
                 gs_stagesurface_destroy(s);
@@ -479,8 +481,9 @@ unsafe extern "C" fn destroy(data: *mut c_void) {
         if !g.texrender.is_null() {
             gs_texrender_destroy(g.texrender);
         }
-        obs_leave_graphics();
     }
+    drop(g);
+    obs_leave_graphics();
 }
 
 unsafe extern "C" fn video_tick(data: *mut c_void, _seconds: f32) {
@@ -512,7 +515,17 @@ unsafe extern "C" fn video_render(data: *mut c_void, _effect: *mut c_void) {
         g.readback.idle();
         return;
     }
-    let step = g.readback.frame(width, height);
+    let fps = {
+        let info = &*video_output_get_info(obs_get_video());
+        (info.fps_num, info.fps_den)
+    };
+    let interval = if fps.0 > 0 {
+        1_000_000_000 * u64::from(fps.1) / u64::from(fps.0)
+    } else {
+        0
+    };
+    let now = obs_get_video_frame_time();
+    let step = g.readback.frame(width, height, now, interval);
     if step.recreate {
         for s in &mut g.surfaces {
             if !s.is_null() {
@@ -548,7 +561,7 @@ unsafe extern "C" fn video_render(data: *mut c_void, _effect: *mut c_void) {
         g.surfaces[step.stage],
         gs_texrender_get_texture(g.texrender),
     );
-    g.stamps[step.stage] = obs_get_video_frame_time();
+    g.stamps[step.stage] = now;
     let Some(read) = step.read else {
         return;
     };
@@ -558,10 +571,6 @@ unsafe extern "C" fn video_render(data: *mut c_void, _effect: *mut c_void) {
     }
     {
         let mut s = f.stream.lock().unwrap();
-        let fps = {
-            let info = &*video_output_get_info(obs_get_video());
-            (info.fps_num, info.fps_den)
-        };
         let resize = (width, height) != s.size;
         if let Some(sender) = s.sender.as_mut() {
             if resize {
