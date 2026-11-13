@@ -24,7 +24,7 @@ The plugin ships with obs-rust:
 NDI becomes part of OBS's own UI and settings:
 - The output settings become a page in OBS Settings; the Tools menu item and the hidden settings source go away.
 - A setting "Built-in NDI: auto / off" for third-party plugins with other ids.
-- The output options users ask for: scaling per output, a frame-rate divisor (a 1080p25 monitor feed next to a 4K main), audio track per output, more outputs with their own scene or source, alpha. Started in step 1: one output engine with size, divisor and track per output (#6); a source or scene as its own output (#5) and a window to manage outputs (#7) are next.
+- The output options users ask for: scaling per output, a frame-rate divisor (a 1080p25 monitor feed next to a 4K main), audio track per output, more outputs with their own scene or source, alpha. Started in step 1: one output engine with size, divisor and track per output (#6), DistroAV's dedicated output filters for a source or scene as its own stream (#5); a window to manage outputs (#7) is next. The filters do not use the engine yet: a size option for them (a 4K source costs about 6 ms of render time per filter) would come with #7.
 - Later, open standards (IPMX, SMPTE ST 2110) behind the same source and output types, with no closed SDK.
 
 ## Shipping the NDI runtime
