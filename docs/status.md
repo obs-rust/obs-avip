@@ -38,6 +38,7 @@ Not tested: Windows on a real GPU and the install to `C:\ProgramData` (only port
 ## Limitations
 
 - No PTZ control, no NDI audio-only senders as their own type.
+- The dedicated output filters tap the audio pre-fader and pre-mute (libobs runs audio filters before the volume and mute), as DistroAV does: a muted source still sends. Measured on macOS: a source muted, or its fader at -30 dB, sent the same level. A post-fader option is a later feature.
 - A dedicated output filter reads its picture back from the GPU in BGRA at the source's size every frame: at 4K that is 33 MB per frame. In the Linux production setup two 4K filters raised OBS's render time from 2.1 to 14.2 ms per frame (of 40 ms at 25 fps) and the CPU load from about 6 % to 58 %. DistroAV reads back the same way. Smaller sources or a later size option (the output engine's scaling) cost less.
 - The dedicated output filters send at OBS's frame rate, one frame behind the render (the read-back of the frame before). A filter on a scene or an image sends no audio (libobs gives filters audio only from sources with their own audio), as in DistroAV. As in DistroAV, they send while libobs counts the source as showing: in the program, the studio-mode preview, a projector or a properties window. In studio mode the program runs a copy of its scene, so hiding an item in that scene does not stop the stream until the next transition.
 - No alpha output; UYVA sources are shown as UYVY (alpha dropped), as DistroAV does.
