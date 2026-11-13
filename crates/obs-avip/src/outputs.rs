@@ -87,13 +87,36 @@ pub const TRACKS: u8 = 6;
 impl OutputSpec {
     /// Check the spec before an output is created from it.
     pub fn check(&self) -> Result<(), SpecError> {
-        todo!()
+        if self.name.is_empty() {
+            return Err(SpecError::NoName);
+        }
+        if let Content::Scene(uuid) | Content::Source(uuid) = &self.content {
+            if uuid.is_empty() {
+                return Err(SpecError::NoUuid);
+            }
+        }
+        let d = self.video.fps_divisor;
+        if d == 0 || d > MAX_FPS_DIVISOR {
+            return Err(SpecError::FpsDivisor(d));
+        }
+        if let Some((w, h)) = self.video.size {
+            if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 {
+                return Err(SpecError::Size(w, h));
+            }
+        }
+        match self.audio {
+            Audio::Track(t) if t >= TRACKS => Err(SpecError::Track(t)),
+            Audio::Source if !matches!(self.content, Content::Source(_)) => {
+                Err(SpecError::SourceAudio)
+            }
+            _ => Ok(()),
+        }
     }
 }
 
 /// The NDI frame rate of an output: OBS's rate divided by the divisor.
 pub fn ndi_fps(fps_num: u32, fps_den: u32, divisor: u32) -> (u32, u32) {
-    todo!()
+    (fps_num, fps_den.saturating_mul(divisor.max(1)))
 }
 
 /// Lets every nth frame through, starting with the first.
@@ -105,12 +128,17 @@ pub struct FrameGate {
 
 impl FrameGate {
     pub fn new(divisor: u32) -> Self {
-        todo!()
+        FrameGate {
+            divisor: divisor.max(1),
+            count: 0,
+        }
     }
 
     /// `true` for the frames the output sends.
     pub fn pass(&mut self) -> bool {
-        todo!()
+        let pass = self.count == 0;
+        self.count = (self.count + 1) % self.divisor;
+        pass
     }
 }
 
@@ -147,8 +175,24 @@ impl Legacy {
     /// The spec of this output from its `[NDIPlugin]` values (`None`: the key
     /// is not set). The main output sends track 1, the preview no audio, as
     /// DistroAV does.
-    pub fn spec(self, enabled: Option<bool>, name: Option<&str>, groups: Option<&str>) -> OutputSpec {
-        todo!()
+    pub fn spec(
+        self,
+        enabled: Option<bool>,
+        name: Option<&str>,
+        groups: Option<&str>,
+    ) -> OutputSpec {
+        let (content, audio) = match self {
+            Legacy::Main => (Content::Program, Audio::Track(0)),
+            Legacy::Preview => (Content::Preview, Audio::None),
+        };
+        OutputSpec {
+            name: name.unwrap_or(self.default_name()).to_string(),
+            groups: groups.unwrap_or_default().to_string(),
+            content,
+            video: Video::default(),
+            audio,
+            enabled: enabled.unwrap_or(false),
+        }
     }
 }
 
@@ -184,7 +228,20 @@ pub struct OutputSettings {
 
 impl OutputSpec {
     pub fn settings(&self) -> OutputSettings {
-        todo!()
+        let (width, height) = self.video.size.unwrap_or((0, 0));
+        OutputSettings {
+            name: self.name.clone(),
+            groups: self.groups.clone(),
+            uses_video: true,
+            uses_audio: self.audio != Audio::None,
+            width,
+            height,
+            fps_divisor: self.video.fps_divisor.max(1),
+            track: match self.audio {
+                Audio::Track(t) => t,
+                _ => 0,
+            },
+        }
     }
 }
 
@@ -286,7 +343,9 @@ mod tests {
 
     #[test]
     fn settings_of_the_legacy_outputs_are_distroavs() {
-        let main = Legacy::Main.spec(Some(true), Some("PGM"), Some("g")).settings();
+        let main = Legacy::Main
+            .spec(Some(true), Some("PGM"), Some("g"))
+            .settings();
         assert_eq!(
             main,
             OutputSettings {
@@ -314,7 +373,10 @@ mod tests {
         };
         s.audio = Audio::Track(3);
         let o = s.settings();
-        assert_eq!((o.width, o.height, o.fps_divisor, o.track), (1280, 720, 2, 3));
+        assert_eq!(
+            (o.width, o.height, o.fps_divisor, o.track),
+            (1280, 720, 2, 3)
+        );
         assert!(o.uses_audio);
         s.audio = Audio::None;
         assert!(!s.settings().uses_audio);
