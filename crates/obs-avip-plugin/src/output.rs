@@ -22,6 +22,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr::null_mut;
 use std::sync::Mutex;
 
+use obs_avip::outputs::{self, FrameGate, Legacy, OutputSpec};
 use obs_avip::send::{self, OutFormat, Sender, VideoIn};
 
 use crate::{log, ndi_plugin_bool, user_config, NDI};
@@ -29,6 +30,11 @@ use crate::{log, ndi_plugin_bool, user_config, NDI};
 #[cfg_attr(windows, link(name = "obs", kind = "raw-dylib"))]
 extern "C" {
     fn obs_register_output_s(info: *const OutputInfo, size: usize);
+    fn obs_output_set_video_conversion(output: *mut c_void, conversion: *const VideoScaleInfo);
+    fn obs_output_set_mixer(output: *mut c_void, mixer_idx: usize);
+    fn obs_data_get_int(data: *mut c_void, name: *const c_char) -> i64;
+    fn obs_data_set_int(data: *mut c_void, name: *const c_char, val: i64);
+    fn obs_data_set_default_int(data: *mut c_void, name: *const c_char, val: i64);
     fn obs_output_video(output: *mut c_void) -> *mut c_void;
     fn obs_output_audio(output: *mut c_void) -> *mut c_void;
     fn obs_output_begin_data_capture(output: *mut c_void, flags: u32) -> bool;
@@ -136,6 +142,16 @@ struct AudioData {
     timestamp: u64,
 }
 
+/// `struct video_scale_info`
+#[repr(C)]
+struct VideoScaleInfo {
+    format: c_int,
+    width: u32,
+    height: u32,
+    range: c_int,
+    colorspace: c_int,
+}
+
 /// `struct video_output_info`
 #[repr(C)]
 struct VideoOutputInfo {
@@ -163,6 +179,8 @@ struct Running {
     height: u32,
     rate: u32,
     channels: usize,
+    /// Every nth OBS frame goes out (`avip_fps_divisor`).
+    gate: FrameGate,
 }
 
 /// The output's settings. `update` can come at any time (obs-websocket
@@ -174,6 +192,12 @@ struct OutSettings {
     groups: CString,
     uses_video: bool,
     uses_audio: bool,
+    /// The scaled size; 0 for the canvas size.
+    width: u32,
+    height: u32,
+    fps_divisor: u32,
+    /// The mix track, 0 to 5.
+    track: u8,
 }
 
 struct Out {
@@ -201,6 +225,10 @@ unsafe extern "C" fn get_defaults(settings: *mut c_void) {
     obs_data_set_default_string(settings, c"ndi_groups".as_ptr(), c"".as_ptr());
     obs_data_set_default_bool(settings, c"uses_video".as_ptr(), true);
     obs_data_set_default_bool(settings, c"uses_audio".as_ptr(), true);
+    obs_data_set_default_int(settings, c"avip_width".as_ptr(), 0);
+    obs_data_set_default_int(settings, c"avip_height".as_ptr(), 0);
+    obs_data_set_default_int(settings, c"avip_fps_divisor".as_ptr(), 1);
+    obs_data_set_default_int(settings, c"avip_track".as_ptr(), 0);
 }
 
 unsafe extern "C" fn get_properties(_: *mut c_void) -> *mut c_void {
@@ -222,7 +250,21 @@ unsafe fn read(settings: *mut c_void) -> OutSettings {
         groups: string(c"ndi_groups").unwrap_or_default(),
         uses_video: obs_data_get_bool(settings, c"uses_video".as_ptr()),
         uses_audio: obs_data_get_bool(settings, c"uses_audio".as_ptr()),
+        width: int(settings, c"avip_width", 0, u32::MAX as i64) as u32,
+        height: int(settings, c"avip_height", 0, u32::MAX as i64) as u32,
+        fps_divisor: int(
+            settings,
+            c"avip_fps_divisor",
+            1,
+            outputs::MAX_FPS_DIVISOR as i64,
+        ) as u32,
+        track: int(settings, c"avip_track", 0, outputs::TRACKS as i64 - 1) as u8,
     }
+}
+
+/// An integer setting clamped to `min..=max`.
+unsafe fn int(settings: *mut c_void, key: &CStr, min: i64, max: i64) -> i64 {
+    obs_data_get_int(settings, key.as_ptr()).clamp(min, max)
 }
 
 unsafe extern "C" fn create(settings: *mut c_void, output: *mut c_void) -> *mut c_void {
@@ -278,11 +320,27 @@ unsafe extern "C" fn start(data: *mut c_void) -> bool {
                 )
             }
         };
-        (width, height, fps) = (info.width, info.height, (info.fps_num, info.fps_den));
+        (width, height) = if cfg.width > 0 && cfg.height > 0 {
+            (cfg.width, cfg.height)
+        } else {
+            (info.width, info.height)
+        };
+        // Always set: a conversion stays set on the output, and the canvas
+        // size in the canvas format is no conversion for libobs.
+        let conversion = VideoScaleInfo {
+            format: info.format,
+            width,
+            height,
+            range: info.range,
+            colorspace: info.colorspace,
+        };
+        obs_output_set_video_conversion(o.output, &conversion);
+        fps = outputs::ndi_fps(info.fps_num, info.fps_den, cfg.fps_divisor);
         flags |= OBS_OUTPUT_VIDEO;
     }
     let (mut rate, mut channels) = (0, 0);
     if cfg.uses_audio && !audio.is_null() {
+        obs_output_set_mixer(o.output, cfg.track as usize);
         rate = audio_output_get_sample_rate(audio);
         channels = audio_output_get_channels(audio);
         flags |= OBS_OUTPUT_AUDIO;
@@ -302,6 +360,7 @@ unsafe extern "C" fn start(data: *mut c_void) -> bool {
         height,
         rate,
         channels,
+        gate: FrameGate::new(cfg.fps_divisor),
     });
     if !obs_output_begin_data_capture(o.output, flags) {
         o.running.lock().unwrap().take();
@@ -310,11 +369,12 @@ unsafe extern "C" fn start(data: *mut c_void) -> bool {
     log(
         300,
         &format!(
-            "output '{}' started: {width}x{height} {:?} at {}/{} fps, {channels} channels at {rate} Hz",
+            "output '{}' started: {width}x{height} {:?} at {}/{} fps, {channels} channels at {rate} Hz, track {}",
             name,
             format,
             fps.0,
-            fps.1
+            fps.1,
+            cfg.track + 1
         ),
     );
     true
@@ -358,6 +418,9 @@ unsafe extern "C" fn raw_video(data: *mut c_void, frame: *mut VideoData) {
     let o = &*data.cast::<Out>();
     let mut running = o.running.lock().unwrap();
     let Some(r) = running.as_mut() else { return };
+    if !r.gate.pass() {
+        return;
+    }
     let f = &*frame;
     let rows = send::plane_rows(r.format, r.height);
     let plane = |i: usize| -> &[u8] {
@@ -441,6 +504,12 @@ impl Kind {
             Kind::Preview => c"NDI Preview Output",
         }
     }
+    fn legacy(self) -> Legacy {
+        match self {
+            Kind::Main => Legacy::Main,
+            Kind::Preview => Legacy::Preview,
+        }
+    }
     fn enabled_key(self) -> &'static CStr {
         match self {
             Kind::Main => c"MainOutputEnabled",
@@ -459,11 +528,14 @@ impl Kind {
             Kind::Preview => c"PreviewOutputGroups",
         }
     }
-    fn default_name(self) -> &'static str {
-        match self {
-            Kind::Main => "OBS PGM",
-            Kind::Preview => "OBS Preview",
-        }
+    /// The spec from `[NDIPlugin]`, with DistroAV's defaults (`outputs::Legacy`).
+    unsafe fn spec(self) -> OutputSpec {
+        let config = user_config();
+        let enabled = ndi_plugin_bool(config, self.enabled_key(), false);
+        let name = ndi_plugin_string(config, self.name_key(), self.legacy().default_name());
+        let groups = ndi_plugin_string(config, self.groups_key(), "");
+        self.legacy()
+            .spec(Some(enabled), Some(&name), Some(&groups))
     }
     fn label(self) -> &'static str {
         match self {
@@ -600,20 +672,29 @@ unsafe fn signals(output: *mut c_void, kind: Kind, connect: bool) {
     f(sh, c"deactivate".as_ptr(), on_deactivate, kind.tag());
 }
 
-unsafe fn open(kind: Kind) {
-    let config = user_config();
-    let enabled = ndi_plugin_bool(config, kind.enabled_key(), false);
-    let name = ndi_plugin_string(config, kind.name_key(), kind.default_name());
-    let groups = ndi_plugin_string(config, kind.groups_key(), "");
-    let settings = obs_data_create();
+/// The `ndi_output` settings of a spec, as a new `obs_data_t` (release it).
+unsafe fn output_data(spec: &OutputSpec) -> *mut c_void {
+    let s = spec.settings();
+    let data = obs_data_create();
     let (cname, cgroups) = (
-        CString::new(name.clone()).unwrap_or_default(),
-        CString::new(groups).unwrap_or_default(),
+        CString::new(s.name).unwrap_or_default(),
+        CString::new(s.groups).unwrap_or_default(),
     );
-    obs_data_set_string(settings, c"ndi_name".as_ptr(), cname.as_ptr());
-    obs_data_set_string(settings, c"ndi_groups".as_ptr(), cgroups.as_ptr());
-    // The preview has no audio (DistroAV's choice).
-    obs_data_set_bool(settings, c"uses_audio".as_ptr(), kind == Kind::Main);
+    obs_data_set_string(data, c"ndi_name".as_ptr(), cname.as_ptr());
+    obs_data_set_string(data, c"ndi_groups".as_ptr(), cgroups.as_ptr());
+    obs_data_set_bool(data, c"uses_video".as_ptr(), s.uses_video);
+    obs_data_set_bool(data, c"uses_audio".as_ptr(), s.uses_audio);
+    obs_data_set_int(data, c"avip_width".as_ptr(), s.width as i64);
+    obs_data_set_int(data, c"avip_height".as_ptr(), s.height as i64);
+    obs_data_set_int(data, c"avip_fps_divisor".as_ptr(), s.fps_divisor as i64);
+    obs_data_set_int(data, c"avip_track".as_ptr(), s.track as i64);
+    data
+}
+
+unsafe fn open(kind: Kind) {
+    let spec = kind.spec();
+    let (enabled, name) = (spec.enabled, spec.name.clone());
+    let settings = output_data(&spec);
     let output = obs_output_create(
         OUTPUT_ID.as_ptr(),
         kind.output_name().as_ptr(),
@@ -680,11 +761,9 @@ pub(crate) unsafe fn close_main() {
 /// changed it: a new name or groups re-creates the output; otherwise it is
 /// only started or stopped to match `...OutputEnabled`.
 pub(crate) unsafe fn apply_config() {
-    let config = user_config();
     for kind in Kind::ALL {
-        let enabled = ndi_plugin_bool(config, kind.enabled_key(), false);
-        let name = ndi_plugin_string(config, kind.name_key(), kind.default_name());
-        let groups = ndi_plugin_string(config, kind.groups_key(), "");
+        let spec = kind.spec();
+        let (enabled, name, groups) = (spec.enabled, spec.name, spec.groups);
         let current = MANAGED.lock().unwrap()[kind as usize].as_ref().map(|m| m.0);
         let Some(output) = current else {
             open(kind);
