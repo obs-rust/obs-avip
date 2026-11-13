@@ -96,7 +96,12 @@ impl Readback {
     /// in the frame times is a pause: the frame staged before it is old and
     /// is dropped.
     pub fn frame(&mut self, width: u32, height: u32, time_ns: u64, interval_ns: u64) -> Step {
-        let _ = (time_ns, interval_ns, &self.last);
+        let gap = matches!(self.last, Some(last) if interval_ns > 0
+            && time_ns.saturating_sub(last) > interval_ns + interval_ns / 2);
+        self.last = Some(time_ns);
+        if gap {
+            self.staged = [false; 2];
+        }
         let recreate = self.size != Some((width, height));
         if recreate {
             self.size = Some((width, height));
